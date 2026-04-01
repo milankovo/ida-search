@@ -27,9 +27,9 @@ import enum
 import idaapi
 import parse
 from importlib import reload
+from ir import FloatTerm, NumberTerm, TextTerm
 
 reload(parse)
-from parse import PatternCategory
 
 
 def get_reqmat_choices() -> list[tuple[str, int]]:
@@ -130,7 +130,6 @@ ENDHELP
 IDA Search
 {{FormChangeCb}}
 <~P~attern:{{txtPattern}}>
-{{type_description}}
 <##Endian##~L~ittle:{{rLittle}}> <~B~ig:{{rBig}}> <B~o~th:{{rBoth}}>{{cGroup1}}>
 <##Search backends##B~y~te search:{{opt0Bytes}}>
 <~I~nstruction operands:{{opt1Insn}}>
@@ -149,7 +148,6 @@ IDA Search
                     overview,
                     tp=F.FT_HTML_LABEL,
                 ),
-                "type_description": F.StringLabel("hic sunt descriptiones"),
                 "FormChangeCb": F.FormChangeCb(self.OnFormChange),
                 "patterns": F.StringLabel("Patterns:\n"),
                 "cGroup1": F.RadGroupControl(["rLittle", "rBig", "rBoth"]),
@@ -195,10 +193,6 @@ IDA Search
                 self.refresh()
             elif fid in (self.rLittle.id, self.rBig.id, self.rBoth.id):
                 self.refresh()
-            # elif fid == self.pattern_type.id:
-            #    ti = self.GetControlValue(self.pattern_type)
-            #    self.SetControlValue(self.type_description, parse.Types[ti].description)
-            #    self.refresh()
         except Exception:
             pass
         return 1
@@ -214,6 +208,7 @@ IDA Search
 
         try:
             f = parse.PatternLocator.from_string(s, encodings=encodings, endian=endian)
+            terms = f.to_ir()
             patterns = f.to_pattern()
             lines = []
             if len(patterns) == 1:
@@ -242,9 +237,10 @@ IDA Search
             msg = "\n".join(lines)
             self.enable_ok(True)
 
-            endian_applicable = (
-                f.type.category in [PatternCategory.signed, PatternCategory.unsigned]
-                or f.type is parse.UnicodeString
+            endian_applicable = any(
+                isinstance(term, (NumberTerm, FloatTerm))
+                or (isinstance(term, TextTerm) and term.encoding == "unicode")
+                for term in terms
             )
             self.ShowField(self.cGroup1, endian_applicable)
 
