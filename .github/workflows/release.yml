@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Run tests
+        run: pytest tests/test_pipeline.py -q
+
+      - name: Read plugin version
+        id: version
+        run: |
+          version=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('ida-plugin.json').read_text(encoding='ascii'))
+          print(manifest['plugin']['version'])
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches manifest version
+        run: |
+          test "${GITHUB_REF_NAME}" = "v${{ steps.version.outputs.version }}"
+
+      - name: Build release archive
+        run: |
+          mkdir -p dist/package
+          rsync -av ./ dist/package/ \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.pytest_cache/' \
+            --exclude '.venv/' \
+            --exclude '__pycache__/' \
+            --exclude 'tests/' \
+            --exclude '*.pyc' \
+            --exclude '*.pyo'
+          cd dist/package
+          zip -r "../ida-search-${{ steps.version.outputs.version }}.zip" .
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/ida-search-${{ steps.version.outputs.version }}.zip
