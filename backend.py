@@ -566,6 +566,31 @@ class CTreeBackend:
                 return None
 
 
+def _iter_switch_case_values(switch) -> typing.Iterator[int]:
+    """Yield integer case values from a Hex-Rays switch object."""
+
+    if switch is None:
+        return
+
+    for case in getattr(switch, "cases", ()):
+        for value in getattr(case, "values", ()):
+            yield int(value)
+
+
+def _get_cinsn_switch(insn):
+    """Return the switch payload for a cinsn_t-like object, if present."""
+
+    switch = getattr(insn, "cswitch", None)
+    if switch is not None:
+        return switch
+
+    specific = getattr(insn, "to_specific_type", None)
+    if specific is not None:
+        return getattr(specific, "cswitch", None)
+
+    return None
+
+
 def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]]:
     """Search one function's ctree for *query*.
 
@@ -595,11 +620,21 @@ def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]
 
             return fnc_ea
 
+        def _match_insn_ea(self, insn) -> int:
+            if insn.ea != idaapi.BADADDR:
+                return insn.ea
+
+            parent_insn = self.parent_insn()
+            if parent_insn is not None and parent_insn.ea != idaapi.BADADDR:
+                return parent_insn.ea
+
+            return fnc_ea
+
         def visit_expr(self, expr: idaapi.cexpr_t):
             ea = self._match_ea(expr)
 
             if query.number is not None and expr.op == idaapi.cot_num:
-                if expr.n._value == query.number:
+                if expr.n is not None and expr.n._value == query.number:
                     self.results.append((ea, f"num {query.number:#x}"))
             elif query.number is not None and expr.op == idaapi.cot_obj:
                 if expr.obj_ea == query.number:
@@ -607,12 +642,13 @@ def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]
 
             if query.text is not None:
                 if expr.op == idaapi.cot_str:
+                    expr_string = expr.string or ""
                     if query.case_sensitive:
-                        hit = query.text in expr.string
+                        hit = query.text in expr_string
                     else:
-                        hit = query.text.lower() in expr.string.lower()
+                        hit = query.text.lower() in expr_string.lower()
                     if hit:
-                        self.results.append((ea, f'str "{expr.string}"'))
+                        self.results.append((ea, f'str "{expr_string}"'))
                 elif expr.op == idaapi.cot_obj:
                     name = idaapi.get_name(expr.obj_ea)
                     if name:
@@ -624,10 +660,22 @@ def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]
                             self.results.append((ea, f"obj {name}"))
 
             if query.float_value is not None and expr.op == idaapi.cot_fnum:
-                fv = expr.fpc.fnum
-                if hasattr(fv, "_float"):
+                fv = expr.fpc.fnum if expr.fpc is not None else None
+                if fv is not None and hasattr(fv, "_float"):
                     if fv._float == query.float_value:
                         self.results.append((ea, f"fnum {query.float_value}"))
+
+            return 0
+
+        def visit_insn(self, insn):
+            if query.number is None or insn.op != idaapi.cit_switch:
+                return 0
+
+            for value in _iter_switch_case_values(_get_cinsn_switch(insn)):
+                if value == query.number:
+                    ea = self._match_insn_ea(insn)
+                    self.results.append((ea, f"switch case {query.number:#x}"))
+                    break
 
             return 0
 

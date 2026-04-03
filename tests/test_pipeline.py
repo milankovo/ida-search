@@ -48,6 +48,7 @@ from backend import (
     CTreeQuery,
     PseudocodeTextBackend,
     PseudocodeQuery,
+    _iter_switch_case_values,
 )
 from parse import PatternLocator, help, overview, html_overview
 
@@ -527,6 +528,22 @@ class TestCTreeBackend:
 
     def test_bytes_returns_none(self):
         assert self.backend.emit(BytesTerm(data=b"\x00")) is None
+
+    def test_iter_switch_case_values(self):
+        class FakeCase:
+            def __init__(self, values):
+                self.values = values
+
+        class FakeSwitch:
+            def __init__(self, cases):
+                self.cases = cases
+
+        switch = FakeSwitch([FakeCase([1, 2]), FakeCase([7]), FakeCase([])])
+
+        assert list(_iter_switch_case_values(switch)) == [1, 2, 7]
+
+    def test_iter_switch_case_values_handles_none(self):
+        assert list(_iter_switch_case_values(None)) == []
 
 
 class TestPseudocodeTextBackend:

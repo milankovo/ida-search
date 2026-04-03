@@ -43,7 +43,7 @@ Press **Alt-Shift-B** to open the unified search form.  It provides:
 | Byte search | `ByteSearchBackend` | Raw bytes via `bin_search` (always available) |
 | Instruction operands | `InsnOperandBackend` | `decode_insn` at every offset (always available) |
 | Microcode | `MicrocodeBackend` | Hex-Rays microcode operands (globals, immediates, call targets, helpers, strings, float constants; requires decompiler) |
-| CTree | `CTreeBackend` | Decompiled AST nodes (requires decompiler) |
+| CTree | `CTreeBackend` | Decompiled AST nodes and switch case values (requires decompiler) |
 | Pseudocode text | `PseudocodeTextBackend` | Substring in decompiled output (requires decompiler) |
 
 The form shows which backends are applicable for the current input.  Hex-Rays backends are hidden when the decompiler is not available.
@@ -132,7 +132,7 @@ The plugin supports five search backends, each trading speed for semantic accura
 | 1 | **Byte Search** | Fastest | Nothing | Raw bytes via `bin_search` |
 | 2 | **Instruction Operand** | Fast | Nothing | `decode_insn` at every offset, checks `op_t.value`/`op_t.addr` |
 | 3 | **Microcode** | Slow | Hex-Rays | Microcode operands via `mba.for_all_ops` (constants, strings, helper names) |
-| 4 | **CTree** | Slow | Hex-Rays | Decompiled AST (`cfunc_t.body`) -- `cot_num`, `cot_str`, `cot_fnum` |
+| 4 | **CTree** | Slow | Hex-Rays | Decompiled AST (`cfunc_t.body`) -- numeric/string/float literals, object references, and switch case values |
 | 5 | **Pseudocode Text** | Slow | Hex-Rays | Substring match in decompiled pseudocode output |
 
 ### Which terms work with which backends?
@@ -150,7 +150,7 @@ The plugin supports five search backends, each trading speed for semantic accura
 - **Byte Search** (default): fastest, finds raw byte patterns anywhere in the binary.  Use for known byte sequences, strings, or constants whose encoding you understand.
 - **Instruction Operand**: finds constants used as instruction immediates or memory references, regardless of how the bytes are laid out.  Good for finding all references to a specific address or constant.
 - **Microcode**: searches Hex-Rays intermediate representation.  Catches constants after compiler optimizations (constant folding, strength reduction) that byte search would miss.
-- **CTree**: searches the decompiled AST.  Distinguishes between numeric constants, string literals, floating-point literals, and object references.
+- **CTree**: searches the decompiled AST.  Distinguishes between numeric constants, string literals, floating-point literals, object references, and switch case values.
 - **Pseudocode Text**: plain substring search in the decompiler output.  Finds variable names, type names, comments, enum members -- anything visible in the pseudocode window.
 
 ## Endianness
