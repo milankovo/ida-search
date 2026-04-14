@@ -82,3 +82,20 @@ class FloatTerm(SearchTerm):
 
     value: float
     width: int
+
+
+@dataclass(frozen=True)
+class RangeTerm(SearchTerm):
+    """User typed a numeric range.
+
+    Matches any integer whose value satisfies ``low <= value <= high``.
+    Internally converted to half-open ``[low, high+1)`` for
+    ``idaapi.rangeset_t``.
+
+    Attributes:
+        low:  Inclusive lower bound.
+        high: Inclusive upper bound.
+    """
+
+    low: int
+    high: int

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from enum import IntFlag, auto
 
-from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm
+from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm, RangeTerm
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +448,32 @@ UnsignedTetraSpec = _make_int_spec(
     PatternCategory.unsigned,
     7,
 )
+
+
+# ---------------------------------------------------------------------------
+# Range parser
+# ---------------------------------------------------------------------------
+
+
+class RangeSpec(TypeSpec):
+    """Searches for any integer in a [low..high] range (inclusive)."""
+
+    aliases = ["range", "r"]
+    name = "Range"
+    description = "searches for any integer in [low..high] (inclusive)."
+    category = PatternCategory.unsigned
+    rank = 3
+
+    @classmethod
+    def parse(cls, value: str) -> list[SearchTerm]:
+        if ".." not in value:
+            raise ValueError("Range requires 'low..high' syntax")
+        low_s, high_s = value.split("..", 1)
+        low = int(low_s.strip(), 0)
+        high = int(high_s.strip(), 0)
+        if low > high:
+            raise ValueError(f"Range low ({low}) must be <= high ({high})")
+        return [RangeTerm(low=low, high=high)]
 
 
 # ---------------------------------------------------------------------------

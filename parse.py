@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from itertools import groupby
 
-from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm
+from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm, RangeTerm
 from frontend import (
     TypeSpec,
     Types,
@@ -44,6 +44,20 @@ from backend import (
 
 # Re-export for backward compatibility (ask_form.py references parse.UnicodeString)
 UnicodeString = UnicodeSpec
+
+
+def _term_priority(term: SearchTerm) -> int:
+    if isinstance(term, RangeTerm):
+        return 0
+    if isinstance(term, NumberTerm):
+        return 1
+    if isinstance(term, FloatTerm):
+        return 2
+    if isinstance(term, BytesTerm):
+        return 3
+    if isinstance(term, TextTerm):
+        return 4
+    return 5
 
 # ---------------------------------------------------------------------------
 # PatternLocator -- main entry point
@@ -124,6 +138,10 @@ class PatternLocator:
         """Parse user input into semantic IR nodes."""
         return self.type_spec.parse(self.value)
 
+    def _ordered_ir(self) -> list[SearchTerm]:
+        """Order semantic terms so Magic mode prefers specific parses first."""
+        return sorted(self.to_ir(), key=_term_priority)
+
     # -- Backend 1: byte-level patterns --
 
     def to_pattern(self) -> list[Pattern]:
@@ -145,7 +163,7 @@ class PatternLocator:
     def to_operand_query(self) -> OperandQuery | None:
         """Produce an instruction-operand query, or ``None`` if not applicable."""
         backend = InsnOperandBackend()
-        for term in self.to_ir():
+        for term in self._ordered_ir():
             result = backend.emit(term)
             if result is not None:
                 return result
@@ -156,12 +174,13 @@ class PatternLocator:
     def to_microcode_query(self, reqmat: int | None = None) -> MicrocodeQuery | None:
         """Produce a Hex-Rays microcode query, or ``None`` if not applicable."""
         backend = MicrocodeBackend()
-        for term in self.to_ir():
+        for term in self._ordered_ir():
             result = backend.emit(term, case_sensitive=self.case_sensitive)
             if result is not None:
                 if reqmat is not None:
                     return MicrocodeQuery(
                         values=result.values,
+                        ranges=result.ranges,
                         text=result.text,
                         float_value=result.float_value,
                         case_sensitive=result.case_sensitive,
@@ -175,12 +194,13 @@ class PatternLocator:
     def to_ctree_query(self, cmat: int | None = None) -> CTreeQuery | None:
         """Produce a Hex-Rays ctree query, or ``None`` if not applicable."""
         backend = CTreeBackend()
-        for term in self.to_ir():
+        for term in self._ordered_ir():
             result = backend.emit(term, case_sensitive=self.case_sensitive)
             if result is not None:
                 if cmat is not None:
                     return CTreeQuery(
                         number=result.number,
+                        number_range=result.number_range,
                         text=result.text,
                         float_value=result.float_value,
                         case_sensitive=result.case_sensitive,
@@ -194,7 +214,7 @@ class PatternLocator:
     def to_pseudocode_query(self) -> PseudocodeQuery | None:
         """Produce a pseudocode text query, or ``None`` if not applicable."""
         backend = PseudocodeTextBackend()
-        for term in self.to_ir():
+        for term in self._ordered_ir():
             result = backend.emit(term, case_sensitive=self.case_sensitive)
             if result is not None:
                 return result

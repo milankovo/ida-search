@@ -2,7 +2,7 @@
     "IDAMetadataDescriptorVersion": 1,
     "plugin": {
         "name": "ida-search",
-        "version": "0.1.2",
+        "version": "0.2.0",
         "entryPoint": "plugin.py",
         "description": "010 Editor-style type-aware binary search with five backends: raw bytes, instruction operands, Hex-Rays microcode, ctree AST, and pseudocode text.",
         "license": "MIT",

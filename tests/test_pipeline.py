@@ -10,7 +10,7 @@ import struct
 
 import pytest
 
-from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm
+from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm, RangeTerm
 from frontend import (
     TypeSpec,
     Types,
@@ -35,6 +35,7 @@ from frontend import (
     UnsignedShortSpec,
     SignedQuadSpec,
     UnsignedQuadSpec,
+    RangeSpec,
 )
 from backend import (
     Endian,
@@ -48,6 +49,7 @@ from backend import (
     CTreeQuery,
     PseudocodeTextBackend,
     PseudocodeQuery,
+    _iter_ctree_numeric_values,
     _iter_switch_case_values,
 )
 from parse import PatternLocator, help, overview, html_overview
@@ -95,12 +97,20 @@ class TestIRNodes:
         with pytest.raises(AttributeError):
             t.width = 8
 
+    def test_range_term_frozen(self):
+        t = RangeTerm(low=100, high=200)
+        assert t.low == 100
+        assert t.high == 200
+        with pytest.raises(AttributeError):
+            t.low = 0
+
     def test_all_are_search_terms(self):
         for node in [
             NumberTerm(1, 1, False),
             TextTerm("x"),
             BytesTerm(b"\x00"),
             FloatTerm(1.0, 4),
+            RangeTerm(0, 10),
         ]:
             assert isinstance(node, SearchTerm)
 
@@ -285,6 +295,52 @@ class TestFloatSpecs:
         assert term.width == 8
 
 
+class TestRangeSpec:
+    def test_decimal_range(self):
+        [term] = RangeSpec.parse("915..919")
+        assert isinstance(term, RangeTerm)
+        assert term.low == 915
+        assert term.high == 919
+
+    def test_hex_range(self):
+        [term] = RangeSpec.parse("0x100..0x200")
+        assert isinstance(term, RangeTerm)
+        assert term.low == 0x100
+        assert term.high == 0x200
+
+    def test_mixed_bases(self):
+        [term] = RangeSpec.parse("0o10..0xFF")
+        assert term.low == 8
+        assert term.high == 255
+
+    def test_single_value_range(self):
+        [term] = RangeSpec.parse("42..42")
+        assert term.low == 42
+        assert term.high == 42
+
+    def test_missing_dots_raises(self):
+        with pytest.raises(ValueError, match="low..high"):
+            RangeSpec.parse("100")
+
+    def test_inverted_range_raises(self):
+        with pytest.raises(ValueError, match="must be <="):
+            RangeSpec.parse("200..100")
+
+    def test_split_text_and_type_range(self):
+        value, spec = split_text_and_type("915..919,range")
+        assert value == "915..919"
+        assert spec is RangeSpec
+
+    def test_split_text_and_type_r(self):
+        value, spec = split_text_and_type("0x100..0x200,r")
+        assert value == "0x100..0x200"
+        assert spec is RangeSpec
+
+    def test_alias_registered(self):
+        assert AliasToType["range"] is RangeSpec
+        assert AliasToType["r"] is RangeSpec
+
+
 class TestMagicSpec:
     def test_returns_multiple_terms(self):
         terms = MagicSpec.parse("42")
@@ -301,6 +357,11 @@ class TestMagicSpec:
     def test_hex_like_input(self):
         terms = MagicSpec.parse("DEADBEEF")
         assert len(terms) >= 1
+
+    def test_magic_detects_range_syntax(self):
+        terms = MagicSpec.parse("100..200")
+        has_range = any(isinstance(t, RangeTerm) for t in terms)
+        assert has_range
 
 
 # ===================================================================
@@ -460,6 +521,15 @@ class TestByteSearchBackend:
         assert struct.pack(">d", 1.0) in data_set
 
 
+class TestByteSearchBackendRange:
+    backend = ByteSearchBackend()
+
+    def test_range_returns_empty(self):
+        term = RangeTerm(low=100, high=200)
+        patterns = self.backend.emit(term, Endian.LITTLE, [])
+        assert patterns == []
+
+
 class TestInsnOperandBackend:
     backend = InsnOperandBackend()
 
@@ -477,6 +547,32 @@ class TestInsnOperandBackend:
 
     def test_float_returns_none(self):
         assert self.backend.emit(FloatTerm(value=1.0, width=4)) is None
+
+    def test_range_produces_query(self):
+        term = RangeTerm(low=100, high=200)
+        q = self.backend.emit(term)
+        assert isinstance(q, OperandQuery)
+        assert q.ranges == ((100, 200),)
+        assert q.values == frozenset()
+
+    def test_operand_query_matches_in_range(self):
+        q = OperandQuery(values=frozenset(), ranges=((10, 20),))
+        assert q.matches(10)
+        assert q.matches(15)
+        assert q.matches(20)
+        assert not q.matches(9)
+        assert not q.matches(21)
+
+    def test_operand_query_matches_exact_values(self):
+        q = OperandQuery(values=frozenset({42}), ranges=())
+        assert q.matches(42)
+        assert not q.matches(43)
+
+    def test_operand_query_matches_both(self):
+        q = OperandQuery(values=frozenset({5}), ranges=((10, 20),))
+        assert q.matches(5)
+        assert q.matches(15)
+        assert not q.matches(7)
 
 
 class TestMicrocodeBackend:
@@ -502,6 +598,13 @@ class TestMicrocodeBackend:
 
     def test_bytes_returns_none(self):
         assert self.backend.emit(BytesTerm(data=b"\x00")) is None
+
+    def test_range_produces_query(self):
+        term = RangeTerm(low=915, high=919)
+        q = self.backend.emit(term)
+        assert isinstance(q, MicrocodeQuery)
+        assert q.ranges == [(915, 920)]
+        assert q.values == []
 
 
 class TestCTreeBackend:
@@ -529,6 +632,33 @@ class TestCTreeBackend:
     def test_bytes_returns_none(self):
         assert self.backend.emit(BytesTerm(data=b"\x00")) is None
 
+    def test_range_produces_query(self):
+        term = RangeTerm(low=0x100, high=0x200)
+        q = self.backend.emit(term)
+        assert isinstance(q, CTreeQuery)
+        assert q.number_range == (0x100, 0x200)
+        assert q.number is None
+
+    def test_ctree_query_number_matches_exact(self):
+        q = CTreeQuery(number=42)
+        assert q.number_matches(42)
+        assert not q.number_matches(43)
+        assert q.has_number_query
+
+    def test_ctree_query_number_matches_range(self):
+        q = CTreeQuery(number_range=(10, 20))
+        assert q.number_matches(10)
+        assert q.number_matches(15)
+        assert q.number_matches(20)
+        assert not q.number_matches(9)
+        assert not q.number_matches(21)
+        assert q.has_number_query
+
+    def test_ctree_query_no_number_query(self):
+        q = CTreeQuery(text="hello")
+        assert not q.has_number_query
+        assert not q.number_matches(42)
+
     def test_iter_switch_case_values(self):
         class FakeCase:
             def __init__(self, values):
@@ -544,6 +674,34 @@ class TestCTreeBackend:
 
     def test_iter_switch_case_values_handles_none(self):
         assert list(_iter_switch_case_values(None)) == []
+
+    def test_iter_ctree_numeric_values_reads_num_value(self):
+        class FakeNumber:
+            def __init__(self, value):
+                self._value = value
+
+        class FakeExpr:
+            def __init__(self):
+                self.op = object()
+                self.n = FakeNumber(0x848)
+                self.obj_ea = None
+
+            def numval(self):
+                raise AssertionError("fallback should not be needed")
+
+        assert list(_iter_ctree_numeric_values(FakeExpr())) == [0x848]
+
+    def test_iter_ctree_numeric_values_falls_back_to_numval(self):
+        class FakeExpr:
+            def __init__(self):
+                self.op = object()
+                self.n = None
+                self.obj_ea = None
+
+            def numval(self):
+                return 0x848
+
+        assert list(_iter_ctree_numeric_values(FakeExpr())) == [0x848]
 
 
 class TestPseudocodeTextBackend:
@@ -567,6 +725,10 @@ class TestPseudocodeTextBackend:
 
     def test_bytes_returns_none(self):
         assert self.backend.emit(BytesTerm(data=b"\x00")) is None
+
+    def test_range_returns_none(self):
+        term = RangeTerm(low=100, high=200)
+        assert self.backend.emit(term) is None
 
 
 # ===================================================================
@@ -683,6 +845,81 @@ class TestPatternLocator:
 
     def test_to_pseudocode_query_hex_bytes_is_none(self):
         loc = PatternLocator.from_string("DEAD,h")
+        assert loc.to_pseudocode_query() is None
+
+    def test_range_to_ir(self):
+        loc = PatternLocator.from_string("915..919,range")
+        terms = loc.to_ir()
+        assert len(terms) == 1
+        assert isinstance(terms[0], RangeTerm)
+        assert terms[0].low == 915
+        assert terms[0].high == 919
+
+    def test_range_to_pattern_empty(self):
+        loc = PatternLocator.from_string("100..200,range")
+        patterns = loc.to_pattern()
+        assert patterns == []
+
+    def test_range_to_operand_query(self):
+        loc = PatternLocator.from_string("100..200,range")
+        q = loc.to_operand_query()
+        assert isinstance(q, OperandQuery)
+        assert q.ranges == ((100, 200),)
+
+    def test_range_to_microcode_query(self):
+        loc = PatternLocator.from_string("915..919,range")
+        q = loc.to_microcode_query()
+        assert isinstance(q, MicrocodeQuery)
+        assert q.ranges == [(915, 920)]
+
+    def test_range_to_microcode_query_with_reqmat(self):
+        loc = PatternLocator.from_string("915..919,range")
+        q = loc.to_microcode_query(reqmat=5)
+        assert isinstance(q, MicrocodeQuery)
+        assert q.ranges == [(915, 920)]
+        assert q.reqmat == 5
+
+    def test_range_to_ctree_query(self):
+        loc = PatternLocator.from_string("0x100..0x200,range")
+        q = loc.to_ctree_query()
+        assert isinstance(q, CTreeQuery)
+        assert q.number_range == (0x100, 0x200)
+
+    def test_range_to_ctree_query_with_cmat(self):
+        loc = PatternLocator.from_string("100..200,range")
+        q = loc.to_ctree_query(cmat=7)
+        assert isinstance(q, CTreeQuery)
+        assert q.number_range == (100, 200)
+        assert q.cmat == 7
+
+    def test_magic_range_to_operand_query(self):
+        loc = PatternLocator.from_string("0x848..0x849")
+        q = loc.to_operand_query()
+        assert isinstance(q, OperandQuery)
+        assert q.ranges == ((0x848, 0x849),)
+
+    def test_magic_range_to_microcode_query(self):
+        loc = PatternLocator.from_string("0x848..0x849")
+        q = loc.to_microcode_query()
+        assert isinstance(q, MicrocodeQuery)
+        assert q.ranges == [(0x848, 0x84A)]
+        assert q.text is None
+
+    def test_magic_range_to_ctree_query(self):
+        loc = PatternLocator.from_string("0x848..0x849")
+        q = loc.to_ctree_query()
+        assert isinstance(q, CTreeQuery)
+        assert q.number_range == (0x848, 0x849)
+        assert q.text is None
+
+    def test_magic_number_prefers_numeric_ctree_query(self):
+        loc = PatternLocator.from_string("42")
+        q = loc.to_ctree_query()
+        assert isinstance(q, CTreeQuery)
+        assert q.number == 42
+
+    def test_range_to_pseudocode_query_is_none(self):
+        loc = PatternLocator.from_string("100..200,range")
         assert loc.to_pseudocode_query() is None
 
     def test_to_string_roundtrip(self):

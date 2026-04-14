@@ -23,6 +23,7 @@ hcli plugin install ida-search
 | `0x100,i32` | Signed 32-bit integer `256` |
 | `2.5,lf` | Double-precision float `2.5` |
 | `hello,t` | Text string `"hello"` in all IDB encodings |
+| `915..919,range` | Any constant in [915, 919] via microcode/ctree |
 | `hello` | All types (auto-detect) |
 
 3. Results appear in a chooser window.  Double-click to jump to an address.
@@ -110,6 +111,25 @@ Text searches are **case-insensitive by default**.  To match exact case, check *
 
 Integer values accept decimal, `0x` hex, `0o` octal, and `0b` binary prefixes.
 
+### Range
+
+| Alias | Name | Description |
+|---|---|---|
+| `range`, `r` | Range | Searches for any integer in [low..high] (inclusive) |
+
+Range searches find numeric constants whose value falls within the given bounds.  Both bounds are inclusive.  Values accept decimal, `0x` hex, `0o` octal, and `0b` binary prefixes.
+
+**Examples:**
+
+```
+915..919,range              -> any constant in [915, 919]
+915..919,r                  -> same (short alias)
+0x1018FD20..0x1018FD54,range -> address range
+915..919                    -> Magic auto-detects the .. syntax
+```
+
+Range is only applicable to semantic backends (Instruction Operand, Microcode, CTree).  Byte search and pseudocode text search are not applicable since they cannot match value ranges.
+
 ### Float Types
 
 | Alias | Name | Width |
@@ -137,13 +157,13 @@ The plugin supports five search backends, each trading speed for semantic accura
 
 ### Which terms work with which backends?
 
-| Backend | Numbers | Text | Bytes | Floats |
-|---|---|---|---|---|
-| Byte Search | yes | yes | yes | yes |
-| Instruction Operand | yes | -- | -- | -- |
-| Microcode | yes | yes | -- | yes |
-| CTree | yes | yes | -- | yes |
-| Pseudocode Text | yes | yes | -- | yes |
+| Backend | Numbers | Text | Bytes | Floats | Ranges |
+|---|---|---|---|---|---|
+| Byte Search | yes | yes | yes | yes | -- |
+| Instruction Operand | yes | -- | -- | -- | yes |
+| Microcode | yes | yes | -- | yes | yes |
+| CTree | yes | yes | -- | yes | yes |
+| Pseudocode Text | yes | yes | -- | yes | -- |
 
 ### When to use which backend
 
@@ -199,7 +219,7 @@ Frontend (text -> IR)  ->  IR (semantic terms)  ->  Backend (searchable queries)
 
 | Module | Role |
 |---|---|
-| `ir.py` | Intermediate representation: `NumberTerm`, `TextTerm`, `BytesTerm`, `FloatTerm` |
+| `ir.py` | Intermediate representation: `NumberTerm`, `TextTerm`, `BytesTerm`, `FloatTerm`, `RangeTerm` |
 | `frontend.py` | Parsers that convert user input strings into IR nodes (`TypeSpec` subclasses) |
 | `backend.py` | Five backends that convert IR nodes into search queries + IDA search execution |
 | `parse.py` | Orchestration layer (`PatternLocator`) and public API re-exports |

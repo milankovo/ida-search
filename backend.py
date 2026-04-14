@@ -37,7 +37,7 @@ from enum import Enum
 
 from contextlib import contextmanager
 
-from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm
+from ir import SearchTerm, NumberTerm, TextTerm, BytesTerm, FloatTerm, RangeTerm
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +155,8 @@ class ByteSearchBackend:
                 return self._emit_bytes(term, source)
             case FloatTerm():
                 return self._emit_float(term, endian, source)
+            case RangeTerm():
+                return []
             case _:
                 return []
 
@@ -305,9 +307,18 @@ class ByteSearchBackend:
 
 @dataclass(frozen=True)
 class OperandQuery:
-    """Values to look for in decoded instruction operands."""
+    """Values to look for in decoded instruction operands.
+
+    ``ranges`` is a tuple of ``(low, high)`` inclusive pairs.
+    """
 
     values: frozenset[int]
+    ranges: tuple[tuple[int, int], ...] = ()
+
+    def matches(self, v: int) -> bool:
+        if v in self.values:
+            return True
+        return any(lo <= v <= hi for lo, hi in self.ranges)
 
 
 class InsnOperandBackend:
@@ -317,6 +328,10 @@ class InsnOperandBackend:
         match term:
             case NumberTerm():
                 return OperandQuery(values=frozenset({term.value}))
+            case RangeTerm():
+                return OperandQuery(
+                    values=frozenset(), ranges=((term.low, term.high),)
+                )
             case _:
                 return None
 
@@ -358,7 +373,7 @@ def search_insn_operands(
                     for op in insn.ops:
                         if op.type == idaapi.o_void:
                             break
-                        if op.value in query.values or op.addr in query.values:
+                        if query.matches(op.value) or query.matches(op.addr):
                             yield ea, length
                             break
                 ea += 1
@@ -377,10 +392,13 @@ def search_insn_operands(
 class MicrocodeQuery:
     """What to search for in Hex-Rays microcode operands.
 
-    At least one of ``values`` or ``text`` must be set.
+    At least one of ``values``, ``ranges``, or ``text`` must be set.
+    ``ranges`` contains half-open ``(low, high_exclusive)`` pairs
+    suitable for ``idaapi.rangeset_t.add()``.
     """
 
     values: list[int] = field(default_factory=list)
+    ranges: list[tuple[int, int]] = field(default_factory=list)
     text: str | None = None
     float_value: float | None = None
     case_sensitive: bool = False
@@ -393,6 +411,8 @@ class MicrocodeQuery:
         rs = idaapi.rangeset_t()
         for v in self.values:
             rs.add(v, v + 1)
+        for lo, hi in self.ranges:
+            rs.add(lo, hi)
         return rs
 
 
@@ -405,6 +425,8 @@ class MicrocodeBackend:
         match term:
             case NumberTerm():
                 return MicrocodeQuery(values=[term.value])
+            case RangeTerm():
+                return MicrocodeQuery(ranges=[(term.low, term.high + 1)])
             case TextTerm():
                 return MicrocodeQuery(text=term.text, case_sensitive=case_sensitive)
             case FloatTerm():
@@ -441,7 +463,7 @@ class _MicrocodeVisitor:
         if not mba:
             return []
 
-        rangeset = query.to_rangeset() if query.values else None
+        rangeset = query.to_rangeset() if (query.values or query.ranges) else None
 
         class Visitor(idaapi.mop_visitor_t):
             def __init__(self):
@@ -540,13 +562,29 @@ def search_microcode(
 
 @dataclass(frozen=True)
 class CTreeQuery:
-    """What to search for in the decompiled ctree."""
+    """What to search for in the decompiled ctree.
+
+    ``number_range`` is an inclusive ``(low, high)`` pair for range searches.
+    """
 
     number: int | None = None
+    number_range: tuple[int, int] | None = None
     text: str | None = None
     float_value: float | None = None
     case_sensitive: bool = False
     cmat: int | None = None
+
+    def number_matches(self, value: int) -> bool:
+        if self.number is not None and value == self.number:
+            return True
+        if self.number_range is not None:
+            lo, hi = self.number_range
+            return lo <= value <= hi
+        return False
+
+    @property
+    def has_number_query(self) -> bool:
+        return self.number is not None or self.number_range is not None
 
 
 class CTreeBackend:
@@ -558,6 +596,8 @@ class CTreeBackend:
         match term:
             case NumberTerm():
                 return CTreeQuery(number=term.value)
+            case RangeTerm():
+                return CTreeQuery(number_range=(term.low, term.high))
             case TextTerm():
                 return CTreeQuery(text=term.text, case_sensitive=case_sensitive)
             case FloatTerm():
@@ -589,6 +629,41 @@ def _get_cinsn_switch(insn):
         return getattr(specific, "cswitch", None)
 
     return None
+
+
+def _iter_ctree_numeric_values(expr) -> typing.Iterator[int]:
+    """Yield numeric values exposed by a ctree expression.
+
+    Hex-Rays number nodes can expose their value through more than one API
+    surface depending on the operand kind and maturity. Collect all usable
+    integer representations so exact and range matches do not depend on a
+    single field being populated.
+    """
+
+    seen: set[int] = set()
+
+    n = getattr(expr, "n", None)
+    raw_value = getattr(n, "_value", None)
+    if raw_value is not None:
+        value = int(raw_value)
+        seen.add(value)
+        yield value
+
+    numval = getattr(expr, "numval", None)
+    if callable(numval):
+        try:
+            value = int(typing.cast(typing.Any, numval()))
+        except Exception:
+            value = None
+        if value is not None and value not in seen:
+            seen.add(value)
+            yield value
+
+    obj_ea = getattr(expr, "obj_ea", None)
+    if obj_ea is not None:
+        value = int(obj_ea)
+        if value not in seen:
+            yield value
 
 
 def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]]:
@@ -633,12 +708,16 @@ def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]
         def visit_expr(self, expr: idaapi.cexpr_t):
             ea = self._match_ea(expr)
 
-            if query.number is not None and expr.op == idaapi.cot_num:
-                if expr.n is not None and expr.n._value == query.number:
-                    self.results.append((ea, f"num {query.number:#x}"))
-            elif query.number is not None and expr.op == idaapi.cot_obj:
-                if expr.obj_ea == query.number:
-                    self.results.append((ea, f"obj_ea {query.number:#x}"))
+            if query.has_number_query and expr.op == idaapi.cot_num:
+                for value in _iter_ctree_numeric_values(expr):
+                    if query.number_matches(value):
+                        self.results.append((ea, f"num {value:#x}"))
+                        break
+            elif query.has_number_query and expr.op == idaapi.cot_obj:
+                for value in _iter_ctree_numeric_values(expr):
+                    if query.number_matches(value):
+                        self.results.append((ea, f"obj_ea {value:#x}"))
+                        break
 
             if query.text is not None:
                 if expr.op == idaapi.cot_str:
@@ -668,14 +747,13 @@ def search_ctree_in_func(fnc_ea: int, query: CTreeQuery) -> list[tuple[int, str]
             return 0
 
         def visit_insn(self, insn):
-            if query.number is None or insn.op != idaapi.cit_switch:
+            if not query.has_number_query or insn.op != idaapi.cit_switch:
                 return 0
 
             for value in _iter_switch_case_values(_get_cinsn_switch(insn)):
-                if value == query.number:
+                if query.number_matches(value):
                     ea = self._match_insn_ea(insn)
-                    self.results.append((ea, f"switch case {query.number:#x}"))
-                    break
+                    self.results.append((ea, f"switch case {value:#x}"))
 
             return 0
 
@@ -768,6 +846,8 @@ class PseudocodeTextBackend:
                 )
             case FloatTerm():
                 return PseudocodeQuery(substring=str(term.value))
+            case RangeTerm():
+                return None
             case _:
                 return None
 
