@@ -172,7 +172,7 @@ class address_chooser(idaapi.Choose):
 
     def OnInit(self):
         def dis(ea):
-            return idaapi.generate_disasm_line(ea, idaapi.GENDSM_REMOVE_TAGS)
+            return idaapi.generate_disasm_line(ea, idaapi.GENDSM_REMOVE_TAGS|idaapi.GENDSM_FORCE_CODE).strip()
 
         def nm(ea):
             return idaapi.get_func_name(ea) or idaapi.get_name(ea) or ""
