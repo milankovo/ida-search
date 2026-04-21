@@ -52,16 +52,21 @@ class search_parameters_t:
         self.start_ea = idaapi.BADADDR
         self.end_ea = idaapi.BADADDR
 
-        self.byte_pattern = b""
-        self.mask: bytes | None = None
+        self.byte_patterns: list[parse.Pattern] = []
 
     def __str__(self):
-        return f"search_parameters_t(start={self.start_ea:#x}, end={self.end_ea:#x}, pattern={self.byte_pattern.hex(' ')}, mask={self.mask.hex(' ')})"
+        return f"search_parameters_t(start={self.start_ea:#x}, end={self.end_ea:#x}, patterns={len(self.byte_patterns)})"
+
+    def has_patterns(self) -> bool:
+        return bool(self.byte_patterns)
 
     def search_next(self, start_ea: int):
         """
         Search for the next occurence of the pattern
         """
+        if not self.has_patterns():
+            return idaapi.BADADDR
+
         patterns, flags = self.compile_search_patterns()
 
         if self.start_ea <= start_ea < self.end_ea:
@@ -82,6 +87,9 @@ class search_parameters_t:
         """
         Search for the previous occurence of the pattern
         """
+        if not self.has_patterns():
+            return idaapi.BADADDR
+
         patterns, flags = self.compile_search_patterns()
 
         if self.start_ea <= start_ea < self.end_ea:
@@ -113,6 +121,9 @@ class search_parameters_t:
         """
         Search for all occurences of the pattern
         """
+        if not self.has_patterns():
+            return
+
         patterns, flags = self.compile_search_patterns()
 
         from backend import wait_box
@@ -172,7 +183,7 @@ class address_chooser(idaapi.Choose):
 
     def OnInit(self):
         def dis(ea):
-            return idaapi.generate_disasm_line(ea, idaapi.GENDSM_REMOVE_TAGS|idaapi.GENDSM_FORCE_CODE).strip()
+            return idaapi.generate_disasm_line(ea, idaapi.GENDSM_REMOVE_TAGS | idaapi.GENDSM_FORCE_CODE).strip()
 
         def nm(ea):
             return idaapi.get_func_name(ea) or idaapi.get_name(ea) or ""
@@ -571,8 +582,7 @@ class binary_search_next_ah_t(idaapi.action_handler_t):
         self.direction = direction
 
     def activate(self, ctx: idaapi.action_ctx_base_t):
-        if self.search_parameters is None:
-            idaapi.info("No search parameters")
+        if self.search_parameters is None or not self.search_parameters.has_patterns():
             return 0
 
         match self.direction:
